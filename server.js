@@ -2,38 +2,274 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { MercadoPagoConfig, Payment } = require('mercadopago');
-const sqlite3 = require('better-sqlite3');
+const axios = require('axios');
+const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public')); // sirve o helix777.html aqui
+app.use(express.static('public'));
 
 // ─── CONFIG ───────────────────────────────────────
-const JWT_SECRET = process.env.JWT_SECRET || 'TROQUE_ISSO_POR_UMA_SENHA_FORTE';
-const MP_TOKEN   = process.env.MP_TOKEN   || 'SEU_ACCESS_TOKEN_MERCADOPAGO';
-const PORT       = process.env.PORT       || 3000;
+const JWT_SECRET  = process.env.JWT_SECRET  || 'TROQUE_POR_SENHA_FORTE';
+const ASAAS_TOKEN = process.env.ASAAS_TOKEN || 'SEU_TOKEN_ASAAS';
+const ASAAS_URL   = process.env.ASAAS_ENV === 'prod'
+  ? 'https://api.asaas.com/v3'
+  : 'https://sandbox.asaas.com/api/v3';
+const PORT = process.env.PORT || 3000;
 
-// ─── MERCADO PAGO ─────────────────────────────────
-const mp = new MercadoPagoConfig({ accessToken: MP_TOKEN });
-const mpPayment = new Payment(mp);
+// ─── ASAAS CLIENT ─────────────────────────────────
+const asaas = axios.create({
+  baseURL: ASAAS_URL,
+  headers: {
+    'access_token': ASAAS_TOKEN,
+    'Content-Type': 'application/json'
+  }
+});
 
-// ─── BANCO DE DADOS (SQLite) ───────────────────────
-const db = new sqlite3('helix.db');
+// ─── BANCO DE DADOS ───────────────────────────────
+const db = new sqlite3.Database('helix.db');
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    name     TEXT NOT NULL,
-    email    TEXT UNIQUE NOT NULL,
-    phone    TEXT,
-    password TEXT NOT NULL,
-    balance  REAL DEFAULT 0,
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    email      TEXT UNIQUE NOT NULL,
+    phone      TEXT,
+    cpf        TEXT,
+    password   TEXT NOT NULL,
+    balance    REAL DEFAULT 0,
+    asaas_id   TEXT,
     created_at TEXT DEFAULT (datetime('now'))
-  );
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS games (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    bet        REAL NOT NULL,
+    won        REAL NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS deposits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    amount     REAL NOT NULL,
+    asaas_id   TEXT,
+    pix_code   TEXT,
+    pix_qr     TEXT,
+    status     TEXT DEFAULT 'pending',
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS withdrawals (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    amount     REAL NOT NULL,
+    pix_key    TEXT NOT NULL,
+    pix_type   TEXT,
+    pix_name   TEXT,
+    pix_cpf    TEXT,
+    asaas_id   TEXT,
+    status     TEXT DEFAULT 'pending',
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+});
 
+// ─── HELPERS ──────────────────────────────────────
+function dbGet(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => err ? reject(err) : resolve(row));
+  });
+}
+function dbRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function(err) {
+      err ? reject(err) : resolve({ lastID: this.lastID, changes: this.changes });
+    });
+  });
+}
+function dbAll(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows));
+  });
+}
+
+// ─── MIDDLEWARE AUTH ───────────────────────────────
+function auth(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Não autorizado' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'Token inválido' });
+  }
+}
+
+// ─── HELPER ASAAS CUSTOMER ────────────────────────
+async function getOrCreateAsaasCustomer(user) {
+  if (user.asaas_id) return user.asaas_id;
+  const resp = await asaas.post('/customers', {
+    name: user.name,
+    email: user.email,
+    mobilePhone: user.phone || '',
+    cpfCnpj: user.cpf || '',
+  });
+  const asaasId = resp.data.id;
+  await dbRun('UPDATE users SET asaas_id = ? WHERE id = ?', [asaasId, user.id]);
+  return asaasId;
+}
+
+// ════════════════════════════════════════════════════
+// AUTH
+// ════════════════════════════════════════════════════
+
+app.post('/api/register', async (req, res) => {
+  const { name, email, phone, cpf, password } = req.body;
+  if (!name || !email || !password)
+    return res.status(400).json({ error: 'Preencha todos os campos' });
+  try {
+    const hash = bcrypt.hashSync(password, 10);
+    const info = await dbRun(
+      'INSERT INTO users (name, email, phone, cpf, password) VALUES (?, ?, ?, ?, ?)',
+      [name, email, phone || '', cpf || '', hash]
+    );
+    const token = jwt.sign({ id: info.lastID, email }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, name, balance: 0 });
+  } catch (e) {
+    if (e.message.includes('UNIQUE'))
+      return res.status(400).json({ error: 'E-mail já cadastrado' });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  const user = await dbGet('SELECT * FROM users WHERE email = ?', [email]);
+  if (!user || !bcrypt.compareSync(password, user.password))
+    return res.status(401).json({ error: 'E-mail ou senha incorretos' });
+  const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, name: user.name, balance: user.balance });
+});
+
+// ════════════════════════════════════════════════════
+// USUÁRIO
+// ════════════════════════════════════════════════════
+
+app.get('/api/me', auth, async (req, res) => {
+  const user = await dbGet('SELECT id, name, email, phone, cpf, balance FROM users WHERE id = ?', [req.user.id]);
+  if (!user) return res.status(404).json({ error: 'Não encontrado' });
+  res.json(user);
+});
+
+app.get('/api/games', auth, async (req, res) => {
+  const games = await dbAll('SELECT * FROM games WHERE user_id = ? ORDER BY created_at DESC LIMIT 50', [req.user.id]);
+  res.json(games);
+});
+
+// ════════════════════════════════════════════════════
+// JOGO
+// ════════════════════════════════════════════════════
+
+app.post('/api/game/result', auth, async (req, res) => {
+  const { bet, won } = req.body;
+  if (!bet || bet <= 0) return res.status(400).json({ error: 'Aposta inválida' });
+  const user = await dbGet('SELECT * FROM users WHERE id = ?', [req.user.id]);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  if (user.balance < bet) return res.status(400).json({ error: 'Saldo insuficiente' });
+  const newBalance = user.balance + won;
+  await dbRun('UPDATE users SET balance = ? WHERE id = ?', [newBalance, user.id]);
+  await dbRun('INSERT INTO games (user_id, bet, won) VALUES (?, ?, ?)', [user.id, bet, won]);
+  res.json({ balance: newBalance, won });
+});
+
+// ════════════════════════════════════════════════════
+// DEPÓSITO PIX
+// ════════════════════════════════════════════════════
+
+app.post('/api/deposit', auth, async (req, res) => {
+  const { amount } = req.body;
+  if (!amount || amount < 5) return res.status(400).json({ error: 'Valor mínimo R$5,00' });
+  const user = await dbGet('SELECT * FROM users WHERE id = ?', [req.user.id]);
+  try {
+    const customerId = await getOrCreateAsaasCustomer(user);
+    const charge = await asaas.post('/payments', {
+      customer: customerId,
+      billingType: 'PIX',
+      value: Number(amount),
+      dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      description: 'Depósito HelixWin',
+    });
+    const chargeId = charge.data.id;
+    const qrResp = await asaas.get(`/payments/${chargeId}/pixQrCode`);
+    const pixCode = qrResp.data.payload;
+    const pixQR   = qrResp.data.encodedImage;
+    await dbRun(
+      'INSERT INTO deposits (user_id, amount, asaas_id, pix_code, pix_qr) VALUES (?, ?, ?, ?, ?)',
+      [user.id, amount, chargeId, pixCode, pixQR]
+    );
+    res.json({ asaas_id: chargeId, pix_code: pixCode, pix_qr: pixQR });
+  } catch (e) {
+    console.error('Erro depósito:', e.response?.data || e.message);
+    res.status(500).json({ error: 'Erro ao gerar PIX' });
+  }
+});
+
+app.post('/api/webhook/asaas', async (req, res) => {
+  const { event, payment } = req.body;
+  if (event === 'PAYMENT_RECEIVED' || event === 'PAYMENT_CONFIRMED') {
+    const dep = await dbGet('SELECT * FROM deposits WHERE asaas_id = ?', [payment.id]);
+    if (dep && dep.status !== 'approved') {
+      await dbRun('UPDATE deposits SET status = ? WHERE id = ?', ['approved', dep.id]);
+      await dbRun('UPDATE users SET balance = balance + ? WHERE id = ?', [dep.amount, dep.user_id]);
+      console.log(`✅ Depósito aprovado: user ${dep.user_id} | R$${dep.amount}`);
+    }
+  }
+  res.sendStatus(200);
+});
+
+// ════════════════════════════════════════════════════
+// SAQUE PIX (sem exigência de depósito)
+// ════════════════════════════════════════════════════
+
+app.post('/api/withdraw', auth, async (req, res) => {
+  const { amount, pix_key, pix_type, pix_name, pix_cpf } = req.body;
+  if (!amount || amount <= 0) return res.status(400).json({ error: 'Valor inválido' });
+  if (!pix_key)  return res.status(400).json({ error: 'Informe a chave PIX' });
+  if (!pix_type) return res.status(400).json({ error: 'Informe o tipo da chave' });
+
+  const user = await dbGet('SELECT * FROM users WHERE id = ?', [req.user.id]);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  if (user.balance < amount) return res.status(400).json({ error: 'Saldo insuficiente' });
+
+  await dbRun('UPDATE users SET balance = balance - ? WHERE id = ?', [amount, user.id]);
+
+  try {
+    const transfer = await asaas.post('/transfers', {
+      value: Number(amount),
+      pixAddressKey: pix_key,
+      pixAddressKeyType: pix_type,
+      description: 'Saque HelixWin',
+    });
+    const asaasId = transfer.data.id;
+    const status  = transfer.data.status === 'DONE' ? 'paid' : 'pending';
+    await dbRun(
+      'INSERT INTO withdrawals (user_id, amount, pix_key, pix_type, pix_name, pix_cpf, asaas_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [user.id, amount, pix_key, pix_type, pix_name || user.name, pix_cpf || '', asaasId, status]
+    );
+    const updated = await dbGet('SELECT balance FROM users WHERE id = ?', [user.id]);
+    res.json({ message: 'PIX enviado!', balance: updated.balance, status });
+  } catch (e) {
+    await dbRun('UPDATE users SET balance = balance + ? WHERE id = ?', [amount, user.id]);
+    console.error('Erro saque:', e.response?.data || e.message);
+    res.status(500).json({ error: 'Erro ao processar saque' });
+  }
+});
+
+// ─── START ────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log(`🌀 Helix777 rodando na porta ${PORT}`);
+  console.log(`💳 Asaas: ${ASAAS_URL}`);
+});
   CREATE TABLE IF NOT EXISTS games (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL,
