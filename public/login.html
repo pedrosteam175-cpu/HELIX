@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="pt-BR">
 
 <head>
 
@@ -14,11 +14,15 @@ content="width=device-width, initial-scale=1.0"
 
 <style>
 
+*{
+box-sizing:border-box;
+}
+
 body{
 
 margin:0;
 
-background:#080808;
+background:#0b0b0b;
 
 color:white;
 
@@ -36,9 +40,9 @@ height:100vh;
 
 .card{
 
-width:320px;
+width:340px;
 
-background:#121212;
+background:#171717;
 
 padding:30px;
 
@@ -50,21 +54,21 @@ h1{
 
 text-align:center;
 
+margin-bottom:25px;
+
 }
 
 input{
 
 width:100%;
 
-padding:12px;
+padding:14px;
 
-margin:10px 0;
+margin-bottom:14px;
 
 border:none;
 
-border-radius:10px;
-
-box-sizing:border-box;
+border-radius:12px;
 
 }
 
@@ -72,19 +76,27 @@ button{
 
 width:100%;
 
-padding:12px;
+padding:14px;
 
 border:none;
 
-border-radius:10px;
+border-radius:12px;
 
 cursor:pointer;
 
 }
 
+.link{
+
+text-align:center;
+
+margin-top:15px;
+
+}
+
 a{
 
-color:#999;
+color:#888;
 
 text-decoration:none;
 
@@ -118,17 +130,13 @@ required
 
 <button type="submit">
 
-Entrar
+ENTRAR
 
 </button>
 
 </form>
 
-<br>
-
-<div
-style="text-align:center"
->
+<div class="link">
 
 <a href="/register.html">
 
@@ -199,10 +207,18 @@ password
 
 );
 
+if(!response.ok){
+
+alert(
+"Email ou senha incorretos"
+);
+
+return;
+
+}
+
 const data =
 await response.json();
-
-if(response.ok){
 
 localStorage.setItem(
 "token",
@@ -212,19 +228,10 @@ data.token
 window.location.href =
 "/dashboard.html";
 
-}else{
-
-alert(
-data.error ||
-"Falha no login"
-);
-
-}
-
 }catch{
 
 alert(
-"Erro ao conectar"
+"Erro ao conectar ao servidor"
 );
 
 }
