@@ -366,6 +366,338 @@ app.listen(PORT, () => {
   console.log(
     `Servidor rodando em http://localhost:${PORT}`
   );
+});  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  bet REAL NOT NULL,
+  won REAL NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)
+`).run();
+
+db.prepare(`
+CREATE TABLE IF NOT EXISTS deposits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  amount REAL NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)
+`).run();
+
+db.prepare(`
+CREATE TABLE IF NOT EXISTS withdrawals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  amount REAL NOT NULL,
+  pix_key TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)
+`).run();
+
+// ─────────────────────────────────────────
+// AUTH
+// ─────────────────────────────────────────
+function auth(req, res, next) {
+  const header = req.headers.authorization;
+
+  if (!header)
+    return res.status(401).json({
+      error: "Token ausente",
+    });
+
+  try {
+    const token = header.split(" ")[1];
+
+    req.user = jwt.verify(
+      token,
+      JWT_SECRET
+    );
+
+    next();
+  } catch {
+    return res.status(401).json({
+      error: "Token inválido",
+    });
+  }
+}
+
+// ─────────────────────────────────────────
+// CADASTRO
+// ─────────────────────────────────────────
+app.post("/api/register", async (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      phone,
+      password,
+    } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        error: "Preencha todos os campos",
+      });
+    }
+
+    const exists = db
+      .prepare(
+        "SELECT id FROM users WHERE email=?"
+      )
+      .get(email);
+
+    if (exists) {
+      return res.status(400).json({
+        error: "Email já cadastrado",
+      });
+    }
+
+    const hash =
+      await bcrypt.hash(password, 10);
+
+    const result = db
+      .prepare(`
+      INSERT INTO users
+      (name,email,phone,password)
+      VALUES (?,?,?,?)
+    `)
+      .run(
+        name,
+        email,
+        phone || "",
+        hash
+      );
+
+    const token = jwt.sign(
+      {
+        id: result.lastInsertRowid,
+      },
+      JWT_SECRET,
+      {
+        expiresIn: "7d",
+      }
+    );
+
+    res.json({
+      token,
+      name,
+      balance: 0,
+    });
+  } catch {
+    res.status(500).json({
+      error: "Erro interno",
+    });
+  }
+});
+
+// ─────────────────────────────────────────
+// LOGIN
+// ─────────────────────────────────────────
+app.post("/api/login", async (req, res) => {
+  const {
+    email,
+    password,
+  } = req.body;
+
+  const user = db
+    .prepare(
+      "SELECT * FROM users WHERE email=?"
+    )
+    .get(email);
+
+  if (!user) {
+    return res.status(401).json({
+      error: "Credenciais inválidas",
+    });
+  }
+
+  const ok =
+    await bcrypt.compare(
+      password,
+      user.password
+    );
+
+  if (!ok) {
+    return res.status(401).json({
+      error: "Credenciais inválidas",
+    });
+  }
+
+  const token = jwt.sign(
+    {
+      id: user.id,
+    },
+    JWT_SECRET,
+    {
+      expiresIn: "7d",
+    }
+  );
+
+  res.json({
+    token,
+    name: user.name,
+    balance: user.balance,
+  });
+});
+
+// ─────────────────────────────────────────
+// PERFIL
+// ─────────────────────────────────────────
+app.get("/api/me", auth, (req, res) => {
+  const user = db
+    .prepare(`
+    SELECT
+      id,
+      name,
+      email,
+      phone,
+      balance
+    FROM users
+    WHERE id=?
+  `)
+    .get(req.user.id);
+
+  res.json(user);
+});
+
+// ─────────────────────────────────────────
+// DEPÓSITO MANUAL
+// ─────────────────────────────────────────
+app.post(
+  "/api/deposit",
+  auth,
+  (req, res) => {
+    const {
+      amount,
+    } = req.body;
+
+    if (
+      !amount ||
+      amount <= 0
+    ) {
+      return res.status(400).json({
+        error: "Valor inválido",
+      });
+    }
+
+    db.prepare(`
+      UPDATE users
+      SET balance=balance+?
+      WHERE id=?
+    `).run(
+      amount,
+      req.user.id
+    );
+
+    db.prepare(`
+      INSERT INTO deposits
+      (user_id,amount)
+      VALUES (?,?)
+    `).run(
+      req.user.id,
+      amount
+    );
+
+    const user =
+      db.prepare(
+        "SELECT balance FROM users WHERE id=?"
+      )
+      .get(req.user.id);
+
+    res.json({
+      balance:
+        user.balance,
+    });
+  }
+);
+
+// ─────────────────────────────────────────
+// SAQUE
+// ─────────────────────────────────────────
+app.post(
+  "/api/withdraw",
+  auth,
+  (req, res) => {
+    const {
+      amount,
+      pix_key,
+    } = req.body;
+
+    const user =
+      db.prepare(
+        "SELECT * FROM users WHERE id=?"
+      )
+      .get(req.user.id);
+
+    if (
+      !amount ||
+      amount <= 0
+    ) {
+      return res.status(400).json({
+        error: "Valor inválido",
+      });
+    }
+
+    if (
+      user.balance <
+      amount
+    ) {
+      return res.status(400).json({
+        error: "Saldo insuficiente",
+      });
+    }
+
+    db.prepare(`
+      UPDATE users
+      SET balance=balance-?
+      WHERE id=?
+    `).run(
+      amount,
+      user.id
+    );
+
+    db.prepare(`
+      INSERT INTO withdrawals
+      (user_id,amount,pix_key)
+      VALUES (?,?,?)
+    `).run(
+      user.id,
+      amount,
+      pix_key || ""
+    );
+
+    res.json({
+      success: true,
+    });
+  }
+);
+
+// ─────────────────────────────────────────
+// HISTÓRICO
+// ─────────────────────────────────────────
+app.get(
+  "/api/games",
+  auth,
+  (req, res) => {
+    const data =
+      db.prepare(`
+      SELECT *
+      FROM games
+      WHERE user_id=?
+      ORDER BY id DESC
+    `).all(
+        req.user.id
+      );
+
+    res.json(data);
+  }
+);
+
+// ─────────────────────────────────────────
+// START
+// ─────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log(
+    `Servidor rodando em http://localhost:${PORT}`
+  );
 });    name       TEXT NOT NULL,
     email      TEXT UNIQUE NOT NULL,
     phone      TEXT,
