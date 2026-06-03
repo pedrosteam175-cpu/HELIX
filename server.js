@@ -15,7 +15,19 @@ const JWT_SECRET =
 process.env.JWT_SECRET ||
 "troque_por_uma_senha_forte";
 
-const db = new Database("./helix.db");
+// ...
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
+});
+
+process.on("uncaughtException", err => {
+  console.error(err);
+});
+
+process.on("unhandledRejection", err => {
+  console.error(err);
+});
 
 // TABELAS
 [
