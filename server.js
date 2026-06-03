@@ -12,29 +12,393 @@ app.use(express.static("public"));
 
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET =
-  process.env.JWT_SECRET || "troque_por_uma_chave_segura";
+process.env.JWT_SECRET ||
+"troque_por_uma_senha_forte";
 
-// ─────────────────────────────────────────
-// BANCO
-// ─────────────────────────────────────────
 const db = new Database("./helix.db");
 
-// cria tabelas separadamente
-db.prepare(`
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  email TEXT UNIQUE NOT NULL,
-  phone TEXT,
-  password TEXT NOT NULL,
-  balance REAL DEFAULT 0,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+// TABELAS
+[
+`
+CREATE TABLE IF NOT EXISTS users(
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT NOT NULL,
+email TEXT UNIQUE NOT NULL,
+phone TEXT,
+password TEXT NOT NULL,
+balance REAL DEFAULT 0,
+created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )
-`).run();
+`,
+`
+CREATE TABLE IF NOT EXISTS games(
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+user_id INTEGER NOT NULL,
+bet REAL NOT NULL,
+won REAL NOT NULL,
+created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)
+`,
+`
+CREATE TABLE IF NOT EXISTS deposits(
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+user_id INTEGER NOT NULL,
+amount REAL NOT NULL,
+created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)
+`,
+`
+CREATE TABLE IF NOT EXISTS withdrawals(
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+user_id INTEGER NOT NULL,
+amount REAL NOT NULL,
+pix_key TEXT,
+created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)
+`
+].forEach(sql =>
+db.prepare(sql).run()
+);
+
+// AUTH
+function auth(
+req,
+res,
+next
+){
+const auth =
+req.headers.authorization;
+
+if(!auth){
+return res.status(401)
+.json({
+error:"Não autorizado"
+});
+}
+
+try{
+const token =
+auth.split(" ")[1];
+
+req.user =
+jwt.verify(
+token,
+JWT_SECRET
+);
+
+next();
+
+}catch{
+
+return res.status(401)
+.json({
+error:"Token inválido"
+});
+
+}
+}
+
+// REGISTER
+app.post(
+"/api/register",
+async (
+req,
+res
+)=>{
+try{
+
+const {
+name,
+email,
+phone,
+password
+}=req.body;
+
+if(
+!name||
+!email||
+!password
+){
+return res
+.status(400)
+.json({
+error:"Preencha todos os campos"
+});
+}
+
+const exists =
+db.prepare(
+"SELECT id FROM users WHERE email=?"
+)
+.get(email);
+
+if(exists){
+return res
+.status(400)
+.json({
+error:
+"E-mail já cadastrado"
+});
+}
+
+const hash =
+await bcrypt.hash(
+password,
+10
+);
+
+const result =
+db.prepare(`
+INSERT INTO users
+(name,email,phone,password)
+VALUES(?,?,?,?)
+`)
+.run(
+name,
+email,
+phone||"",
+hash
+);
+
+const token =
+jwt.sign(
+{
+id:
+result.lastInsertRowid
+},
+JWT_SECRET,
+{
+expiresIn:"7d"
+}
+);
+
+res.json({
+token,
+name,
+balance:0
+});
+
+}catch{
+
+res.status(500)
+.json({
+error:
+"Erro interno"
+});
+
+}
+}
+);
+
+// LOGIN
+app.post(
+"/api/login",
+async(
+req,
+res
+)=>{
+
+const {
+email,
+password
+}=req.body;
+
+const user =
+db.prepare(
+"SELECT * FROM users WHERE email=?"
+)
+.get(email);
+
+if(!user){
+return res
+.status(401)
+.json({
+error:
+"Credenciais inválidas"
+});
+}
+
+const ok =
+await bcrypt.compare(
+password,
+user.password
+);
+
+if(!ok){
+return res
+.status(401)
+.json({
+error:
+"Credenciais inválidas"
+});
+}
+
+const token =
+jwt.sign(
+{
+id:user.id
+},
+JWT_SECRET,
+{
+expiresIn:"7d"
+}
+);
+
+res.json({
+token,
+name:user.name,
+balance:user.balance
+});
+
+}
+);
+
+// PERFIL
+app.get(
+"/api/me",
+auth,
+(
+req,
+res
+)=>{
+
+const user =
+db.prepare(`
+SELECT
+id,
+name,
+email,
+phone,
+balance
+FROM users
+WHERE id=?
+`)
+.get(
+req.user.id
+);
+
+res.json(
+user
+);
+
+}
+);
+
+// DEPÓSITO
+app.post(
+"/api/deposit",
+auth,
+(
+req,
+res
+)=>{
+
+const {
+amount
+}=req.body;
+
+if(
+!amount||
+amount<=0
+){
+return res
+.status(400)
+.json({
+error:
+"Valor inválido"
+});
+}
 
 db.prepare(`
-CREATE TABLE IF NOT EXISTS games (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+UPDATE users
+SET balance=
+balance+?
+WHERE id=?
+`)
+.run(
+amount,
+req.user.id
+);
+
+res.json({
+success:true
+});
+
+}
+);
+
+// SAQUE
+app.post(
+"/api/withdraw",
+auth,
+(
+req,
+res
+)=>{
+
+const {
+amount,
+pix_key
+}=req.body;
+
+const user =
+db.prepare(
+"SELECT * FROM users WHERE id=?"
+)
+.get(
+req.user.id
+);
+
+if(
+!user||
+user.balance<
+amount
+){
+return res
+.status(400)
+.json({
+error:
+"Saldo insuficiente"
+});
+}
+
+db.prepare(`
+UPDATE users
+SET balance=
+balance-?
+WHERE id=?
+`)
+.run(
+amount,
+user.id
+);
+
+db.prepare(`
+INSERT INTO withdrawals
+(user_id,amount,pix_key)
+VALUES(?,?,?)
+`)
+.run(
+user.id,
+amount,
+pix_key||""
+);
+
+res.json({
+success:true
+});
+
+}
+);
+
+app.listen(
+PORT,
+()=>{
+console.log(
+`Servidor em http://localhost:${PORT}`
+);
+}
+);  id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   bet REAL NOT NULL,
   won REAL NOT NULL,
