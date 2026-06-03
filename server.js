@@ -1528,3 +1528,5 @@ app.listen(PORT, () => {
   console.log(`📦 Banco de dados: helix.db`);
   console.log(`💳 Mercado Pago: ${MP_TOKEN === 'SEU_ACCESS_TOKEN_MERCADOPAGO' ? '⚠️  Token não configurado' : '✅ Configurado'}\n`);
 });
+
+fix render startup
