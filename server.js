@@ -1,6 +1,5 @@
 const express = require("express");
 const cors = require("cors");
-const Database = require("better-sqlite3");
 
 const app = express();
 
@@ -9,32 +8,13 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-const db = new Database("helix.db");
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
- id INTEGER PRIMARY KEY AUTOINCREMENT,
- name TEXT,
- email TEXT
-);
-`);
-
 app.get("/", (req, res) => {
- res.send("HELIX ONLINE");
+  res.send("HELIX ONLINE");
 });
 
 app.listen(PORT, "0.0.0.0", () => {
- console.log("Servidor iniciado");
-});name TEXT NOT NULL,
-email TEXT UNIQUE NOT NULL,
-phone TEXT,
-password TEXT NOT NULL,
-balance REAL DEFAULT 0,
-created_at TEXT DEFAULT CURRENT_TIMESTAMP
-)
-`,
-`
-CREATE TABLE IF NOT EXISTS games(
+  console.log(`Servidor rodando na porta ${PORT}`);
+});CREATE TABLE IF NOT EXISTS games(
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 user_id INTEGER NOT NULL,
 bet REAL NOT NULL,
