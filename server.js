@@ -1,40 +1,31 @@
 const express = require("express");
 const cors = require("cors");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const Database = require("better-sqlite3");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static("public"));
 
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET =
-process.env.JWT_SECRET ||
-"troque_por_uma_senha_forte";
 
-// ...
+const db = new Database("helix.db");
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ name TEXT,
+ email TEXT
+);
+`);
+
+app.get("/", (req, res) => {
+ res.send("HELIX ONLINE");
+});
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
-});
-
-process.on("uncaughtException", err => {
-  console.error(err);
-});
-
-process.on("unhandledRejection", err => {
-  console.error(err);
-});
-
-// TABELAS
-[
-`
-CREATE TABLE IF NOT EXISTS users(
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-name TEXT NOT NULL,
+ console.log("Servidor iniciado");
+});name TEXT NOT NULL,
 email TEXT UNIQUE NOT NULL,
 phone TEXT,
 password TEXT NOT NULL,
