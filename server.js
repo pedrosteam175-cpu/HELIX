@@ -57,6 +57,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
     
+    if (!username || !email || !password) {
+        return res.json({ success: false, message: 'Preencha todos os campos' });
+    }
+    
     const id = uuidv4();
     const hashedPassword = await bcrypt.hash(password, 10);
     
@@ -64,6 +68,7 @@ app.post('/api/register', async (req, res) => {
         [id, username, email, hashedPassword],
         (err) => {
             if (err) {
+                console.error(err);
                 return res.json({ success: false, message: 'UsuÃ¡rio ou email jÃ¡ existe' });
             }
             res.json({ success: true, user: { id, username, email, saldo: 0 } });
@@ -74,9 +79,18 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
     const { login, password } = req.body;
     
+    if (!login || !password) {
+        return res.json({ success: false, message: 'Preencha todos os campos' });
+    }
+    
     db.get(`SELECT * FROM usuarios WHERE username = ? OR email = ?`,
         [login, login],
         async (err, user) => {
+            if (err) {
+                console.error(err);
+                return res.json({ success: false, message: 'Erro no servidor' });
+            }
+            
             if (!user) {
                 return res.json({ success: false, message: 'UsuÃ¡rio nÃ£o encontrado' });
             }
@@ -103,6 +117,10 @@ app.get('/api/user/:id', (req, res) => {
     db.get(`SELECT id, username, email, saldo FROM usuarios WHERE id = ?`,
         [req.params.id],
         (err, user) => {
+            if (err) {
+                console.error(err);
+                return res.json({ success: false });
+            }
             if (!user) {
                 return res.json({ success: false });
             }
@@ -114,37 +132,54 @@ app.get('/api/user/:id', (req, res) => {
 app.post('/api/deposito', (req, res) => {
     const { usuario_id, valor, pix_key } = req.body;
     
+    if (!usuario_id || !valor || !pix_key) {
+        return res.json({ success: false, message: 'Preencha todos os campos' });
+    }
+    
     if (valor < 2) {
         return res.json({ success: false, message: 'DepÃ³sito mÃ­nimo de R$2,00' });
     }
     
     const transacao_id = uuidv4();
     
-    // Simular processamento
+    // Simular processamento com delay
     setTimeout(() => {
         db.run(`INSERT INTO transacoes (id, usuario_id, tipo, valor, status, pix_key) 
                 VALUES (?, ?, 'deposito', ?, 'aprovado', ?)`,
             [transacao_id, usuario_id, valor, pix_key],
             (err) => {
                 if (err) {
+                    console.error(err);
                     return res.json({ success: false, message: 'Erro no depÃ³sito' });
                 }
                 
                 db.run(`UPDATE usuarios SET saldo = saldo + ? WHERE id = ?`,
-                    [valor, usuario_id]);
-                
-                res.json({ success: true, message: 'DepÃ³sito aprovado!', transaction_id: transacao_id });
-            }, 1000);
-    } catch(err) {
-        res.json({ success: false, message: 'Erro' });
-    }
+                    [valor, usuario_id],
+                    (err) => {
+                        if (err) {
+                            console.error(err);
+                            return res.json({ success: false, message: 'Erro ao atualizar saldo' });
+                        }
+                        res.json({ success: true, message: 'DepÃ³sito aprovado!', transaction_id: transacao_id });
+                    });
+            });
+    }, 1000);
 });
 
 // Saque
 app.post('/api/saque', (req, res) => {
     const { usuario_id, valor, pix_key } = req.body;
     
+    if (!usuario_id || !valor || !pix_key) {
+        return res.json({ success: false, message: 'Preencha todos os campos' });
+    }
+    
     db.get(`SELECT saldo FROM usuarios WHERE id = ?`, [usuario_id], (err, user) => {
+        if (err) {
+            console.error(err);
+            return res.json({ success: false, message: 'Erro no servidor' });
+        }
+        
         if (user.saldo < valor) {
             return res.json({ success: false, message: 'Saldo insuficiente' });
         }
@@ -155,8 +190,20 @@ app.post('/api/saque', (req, res) => {
                 VALUES (?, ?, 'saque', ?, 'pendente', ?)`,
             [transacao_id, usuario_id, valor, pix_key],
             (err) => {
-                db.run(`UPDATE usuarios SET saldo = saldo - ? WHERE id = ?`, [valor, usuario_id]);
-                res.json({ success: true, message: 'Saque solicitado!', transaction_id: transacao_id });
+                if (err) {
+                    console.error(err);
+                    return res.json({ success: false, message: 'Erro ao solicitar saque' });
+                }
+                
+                db.run(`UPDATE usuarios SET saldo = saldo - ? WHERE id = ?`, 
+                    [valor, usuario_id],
+                    (err) => {
+                        if (err) {
+                            console.error(err);
+                            return res.json({ success: false, message: 'Erro ao atualizar saldo' });
+                        }
+                        res.json({ success: true, message: 'Saque solicitado!', transaction_id: transacao_id });
+                    });
             });
     });
 });
@@ -166,13 +213,17 @@ app.get('/api/transacoes/:usuario_id', (req, res) => {
     db.all(`SELECT * FROM transacoes WHERE usuario_id = ? ORDER BY created_at DESC LIMIT 50`,
         [req.params.usuario_id],
         (err, transacoes) => {
+            if (err) {
+                console.error(err);
+                return res.json({ success: false, message: 'Erro ao buscar transaÃ§Ãµes' });
+            }
             res.json({ success: true, transacoes });
         });
 });
 
 // ==================== ROLETA ====================
 
-// NÃºmeros da roleta europea
+// NÃºmeros da roleta europeia
 const roletaNumeros = [
     0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 11, 30, 8, 23, 10, 
     5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26
@@ -195,13 +246,22 @@ function girarRoleta() {
     return { numero, cor };
 }
 
-// fazer aposta
+// Fazer aposta
 app.post('/api/apostar', (req, res) => {
     const { usuario_id, tipo, valor, escolha } = req.body;
     
     // tipos: 'numero' (35x), 'cor' (2x), 'par' (2x), 'impar' (2x), 'maior' (2x), 'menor' (2x)
     
+    if (!usuario_id || !tipo || !valor || !escolha) {
+        return res.json({ success: false, message: 'Preencha todos os campos' });
+    }
+    
     db.get(`SELECT saldo FROM usuarios WHERE id = ?`, [usuario_id], (err, user) => {
+        if (err) {
+            console.error(err);
+            return res.json({ success: false, message: 'Erro no servidor' });
+        }
+        
         if (!user || user.saldo < valor) {
             return res.json({ success: false, message: 'Saldo insuficiente' });
         }
@@ -252,20 +312,30 @@ app.post('/api/apostar', (req, res) => {
         const novoSaldo = user.saldo - valor + premio;
         const lucro = premio - valor;
         
-        db.run(`UPDATE usuarios SET saldo = ? WHERE id = ?`, [novoSaldo, usuario_id]);
-        
-        const aposta_id = uuidv4();
-        db.run(`INSERT INTO apostas (id, usuario_id, tipo, valor, escolha, resultado, premio) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [aposta_id, usuario_id, tipo, valor, escolha, resultado.numero + ' (' + resultado.cor + ')', premio]);
-        
-        res.json({ 
-            success: true, 
-            resultado,
-            premio,
-            novoSaldo,
-            lucro,
-            ganhou: apostouGanhou
+        db.run(`UPDATE usuarios SET saldo = ? WHERE id = ?`, [novoSaldo, usuario_id], (err) => {
+            if (err) {
+                console.error(err);
+                return res.json({ success: false, message: 'Erro ao atualizar saldo' });
+            }
+            
+            const aposta_id = uuidv4();
+            db.run(`INSERT INTO apostas (id, usuario_id, tipo, valor, escolha, resultado, premio) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [aposta_id, usuario_id, tipo, valor, escolha, resultado.numero + ' (' + resultado.cor + ')', premio],
+                (err) => {
+                    if (err) {
+                        console.error(err);
+                    }
+                });
+            
+            res.json({ 
+                success: true, 
+                resultado,
+                premio,
+                novoSaldo,
+                lucro,
+                ganhou: apostouGanhou
+            });
         });
     });
 });
@@ -275,6 +345,10 @@ app.get('/api/apostas/:usuario_id', (req, res) => {
     db.all(`SELECT * FROM apostas WHERE usuario_id = ? ORDER BY created_at DESC LIMIT 20`,
         [req.params.usuario_id],
         (err, apostas) => {
+            if (err) {
+                console.error(err);
+                return res.json({ success: false, message: 'Erro ao buscar apostas' });
+            }
             res.json({ success: true, apostas });
         });
 });
@@ -283,6 +357,10 @@ app.get('/api/apostas/:usuario_id', (req, res) => {
 app.get('/api/estatisticas', (req, res) => {
     db.all(`SELECT resultado, COUNT(*) as total FROM apostas GROUP BY resultado ORDER BY total DESC LIMIT 10`,
         (err, stats) => {
+            if (err) {
+                console.error(err);
+                return res.json({ success: false, message: 'Erro ao buscar estatÃ­sticas' });
+            }
             res.json({ success: true, stats });
         });
 });
@@ -290,16 +368,20 @@ app.get('/api/estatisticas', (req, res) => {
 // WebSocket para roleta ao vivo
 wss.on('connection', (ws) => {
     ws.on('message', (message) => {
-        const data = JSON.parse(message);
-        
-        if (data.type === 'girar') {
-            const resultado = girarRoleta();
-            // Enviar para todos
-            wss.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify({ type: 'resultado', resultado }));
-                }
-            });
+        try {
+            const data = JSON.parse(message);
+            
+            if (data.type === 'girar') {
+                const resultado = girarRoleta();
+                // Enviar para todos
+                wss.clients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(JSON.stringify({ type: 'resultado', resultado }));
+                    }
+                });
+            }
+        } catch (e) {
+            console.error('Erro no WebSocket:', e);
         }
     });
 });
